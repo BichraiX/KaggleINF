@@ -67,7 +67,7 @@ class MultiHeadDifferentialAttention(nn.Module):
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
         self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
-        self.norm = nn.GroupNorm(n_embd)
+        self.norm = nn.GroupNorm(num_groups = num_heads, num_channels = head_size * num_heads)
         self.lamb = nn.Parameter(torch.tensor(lambda_init))
 
 
