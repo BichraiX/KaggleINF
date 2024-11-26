@@ -31,6 +31,8 @@ class SimpleTokenizer:
     def vocab_size(self):
         return len(self.word2idx)
     
+
+# Dataset class
 class TweetDataset(Dataset):
     def __init__(self, features, labels):
         self.features = features
@@ -41,8 +43,9 @@ class TweetDataset(Dataset):
 
     def __getitem__(self, idx):
         match_features = torch.tensor(self.features[idx], dtype=torch.long)  # (num_periods, NUM_TWEETS_PER_PERIOD, MAX_TWEET_LENGTH)
-        match_labels = self.labels[idx].to(torch.bfloat16)  # (num_periods,)
+        match_labels = self.labels[idx]  # (num_periods,)
         return match_features, match_labels
+
 
 nltk.download('stopwords')
 nltk.download('wordnet')
@@ -84,8 +87,8 @@ def prepare_and_save_data():
         li.append(df)
     df = pd.concat(li, ignore_index=True)
     df['Tweet'] = df['Tweet'].apply(preprocess_text)
-    with open(DATA_FILE, 'wb') as f:
-        pickle.dump(df, f)
+    # with open(DATA_FILE, 'wb') as f:
+    #     pickle.dump(df, f)
     return df
 
 def load_or_prepare_data():
@@ -114,6 +117,8 @@ MAX_TWEET_LENGTH = 44  # Maximum tweet length in tokens
 grouped_tweets = df.groupby(['MatchID', 'PeriodID'])['Tweet'].apply(list).unstack(fill_value=[])
 grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
 
+PERIOD_LENGTH = 300  # Global variable for period length
+
 def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     """Pad or truncate tokens to max_length."""
     if len(tokens) < max_length:
@@ -121,83 +126,76 @@ def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     else:
         return tokens[:max_length]
 
-
-def sample_tweets_or_pad(period):
+def split_and_pad_period(period, period_length):
     """
-    Select all tweets in the period and pad each tweet to MAX_TWEET_LENGTH.
-    If the period is empty, return a single <PAD> tweet.
+    Split a period into subperiods of size `period_length`, padding as necessary.
+    Args:
+        period: List of tokenized tweets in a period.
+        period_length: Desired length for each subperiod.
+    Returns:
+        List of subperiods, each padded to `period_length`.
     """
-    if len(period) == 0:  # If the period is empty
-        return [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH]
+    # Pad the period to make its length a multiple of period_length
+    total_tweets = len(period)
+    padding_needed = (period_length - (total_tweets % period_length)) % period_length
+    padded_period = period + [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH] * padding_needed
 
-    # Tokenize and pad all tweets in the period
-    padded_tweets = [pad_tweet(tokenizer(tweet)) for tweet in period]
-
-    return padded_tweets
-
-def tokenize_and_sample_grouped_tweets(grouped_tweets):
-    tokenized_periods = []
-    for (match_id,period_id), tweets in grouped_tweets.stack().items(): 
-        tokenized_period = [pad_tweet(tokenizer(tweet)) for tweet in tweets]
-        tokenized_periods.append(tokenized_period)
-    return tokenized_periods
-
-def collate_fn(batch):
-    """
-    Custom collate function to dynamically pad tweets to the maximum number of tweets
-    per period within the batch.
-    """
-    features, labels = zip(*batch)  # Separate features and labels
-    features = [
-        period if len(period) > 0 else torch.tensor([[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH], dtype=torch.long)
-        for period in features
+    # Split into subperiods of size period_length
+    subperiods = [
+        padded_period[i:i + period_length]
+        for i in range(0, len(padded_period), period_length)
     ]
-    # Find the max number of tweets per period in the batch
-    max_tweets_per_period = max(len(period) for period in features)
-    # Pad tweets dynamically
-    padded_features = []
-    for period in features:
-        # Pad the period to max_tweets_per_period
-        padded_period = period.tolist() + [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH] * (max_tweets_per_period - len(period))
-        padded_features.append(torch.tensor(padded_period, dtype=torch.long))
-    
-    # Convert labels to tensor
-    batch_labels = torch.tensor(labels, dtype=torch.bfloat16)  # (batch_size,)
-    
-    # Stack the padded features
-    batch_features = torch.stack(padded_features)  # (batch_size, max_tweets_per_period, MAX_TWEET_LENGTH)
 
-    return batch_features, batch_labels
+    return subperiods
 
+def tokenize_and_process_grouped_tweets(grouped_tweets):
+    """
+    Tokenize and process grouped tweets into subperiods of a fixed length.
+    Args:
+        grouped_tweets: Pandas DataFrame with periods grouped by MatchID and PeriodID.
+    Returns:
+        List of tokenized subperiods and a mapping of period_id to subperiod indices.
+    """
+    tokenized_subperiods = []
+    period_to_subperiod_mapping = {}
+    subperiod_index = 0
 
-# Dataset class
-class TweetDataset(Dataset):
-    def __init__(self, features, labels):
-        self.features = features
-        self.labels = labels
+    for (match_id, period_id), tweets in grouped_tweets.stack().items():
+        # Tokenize and pad the tweets in the period
+        tokenized_period = [pad_tweet(tokenizer(tweet)) for tweet in tweets]
 
-    def __len__(self):
-        return len(self.features)
+        # Split the period into subperiods
+        subperiods = split_and_pad_period(tokenized_period, PERIOD_LENGTH)
 
-    def __getitem__(self, idx):
-        match_features = torch.tensor(self.features[idx], dtype=torch.long)  # (num_periods, NUM_TWEETS_PER_PERIOD, MAX_TWEET_LENGTH)
-        match_labels = self.labels[idx].to(torch.bfloat16)  # (num_periods,)
-        return match_features, match_labels
+        # Map the period_id to the indices of its subperiods
+        period_to_subperiod_mapping[(match_id, period_id)] = list(
+            range(subperiod_index, subperiod_index + len(subperiods))
+        )
+        subperiod_index += len(subperiods)
 
+        # Add subperiods to the dataset
+        tokenized_subperiods.extend(subperiods)
+
+    return tokenized_subperiods, period_to_subperiod_mapping
 
 def prepare_dataset():
     grouped_tweets = df.groupby(['MatchID', 'PeriodID'])['Tweet'].apply(list).unstack(fill_value=[])
     grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
-    tokenized_and_padded_tweets = tokenize_and_sample_grouped_tweets(grouped_tweets)
-    labels = grouped_labels.fillna(0).values.tolist()
-    labels= torch.tensor(labels)
-    labels = labels.view(-1)
-    dataset = TweetDataset(tokenized_and_padded_tweets, labels)
-    return dataset
+    tokenized_and_padded_tweets, period_to_subperiod_mapping = tokenize_and_process_grouped_tweets(grouped_tweets)
 
-def prepare_dataloader(dataset):
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
+    # Flatten the labels to match subperiods
+    labels = []
+    for (match_id, period_id), label in grouped_labels.stack().items():
+        subperiod_indices = period_to_subperiod_mapping[(match_id, period_id)]
+        labels.extend([label] * len(subperiod_indices))
+    labels = torch.tensor(labels, dtype = torch.bfloat16)
+    dataset = TweetDataset(tokenized_and_padded_tweets, labels)
+    return dataset, period_to_subperiod_mapping
+
+def prepare_dataloader(dataset, batch_size):
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     return dataloader
+
 
 def train(model, dataloader, optimizer, criterion, device):
     model.train()

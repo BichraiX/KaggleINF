@@ -5,9 +5,10 @@ from difftransformer import DifferentialTransformerClassifier
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 vocab_size = utils.tokenizer.vocab_size()
-depth = 4
-n_embd = 162
-n_head = 6
+depth = 8
+n_embd = 568
+n_head = 8
+batch_size = 32
 model = DifferentialTransformerClassifier(
 vocab_size=vocab_size,
 embedding_dim=n_embd,  
@@ -17,9 +18,9 @@ model.to(device)
 print("Model Loaded")
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 criterion = criterion = nn.BCELoss()
-dataset = utils.prepare_dataset()
+dataset, _ = utils.prepare_dataset()
 print("Dataset ready")
-dataloader = utils.prepare_dataloader(dataset)
+dataloader = utils.prepare_dataloader(dataset, batch_size = batch_size)
 print("Dataloader ready")
 epochs = 1000
 
