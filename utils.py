@@ -11,6 +11,7 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from torch.utils.data import Dataset, DataLoader
+from sklearn.model_selection import train_test_split
 
 class SimpleTokenizer:
     def __init__(self):
@@ -87,8 +88,8 @@ def prepare_and_save_data():
         li.append(df)
     df = pd.concat(li, ignore_index=True)
     df['Tweet'] = df['Tweet'].apply(preprocess_text)
-    # with open(DATA_FILE, 'wb') as f:
-    #     pickle.dump(df, f)
+    with open(DATA_FILE, 'wb') as f:
+        pickle.dump(df, f)
     return df
 
 def load_or_prepare_data():
@@ -129,13 +130,7 @@ def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
 def split_and_pad_period(period, period_length):
     """
     Split a period into subperiods of size `period_length`, padding as necessary.
-    Args:
-        period: List of tokenized tweets in a period.
-        period_length: Desired length for each subperiod.
-    Returns:
-        List of subperiods, each padded to `period_length`.
     """
-    # Pad the period to make its length a multiple of period_length
     total_tweets = len(period)
     padding_needed = (period_length - (total_tweets % period_length)) % period_length
     padded_period = period + [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH] * padding_needed
@@ -151,10 +146,6 @@ def split_and_pad_period(period, period_length):
 def tokenize_and_process_grouped_tweets(grouped_tweets):
     """
     Tokenize and process grouped tweets into subperiods of a fixed length.
-    Args:
-        grouped_tweets: Pandas DataFrame with periods grouped by MatchID and PeriodID.
-    Returns:
-        List of tokenized subperiods and a mapping of period_id to subperiod indices.
     """
     tokenized_subperiods = []
     period_to_subperiod_mapping = {}
@@ -178,23 +169,48 @@ def tokenize_and_process_grouped_tweets(grouped_tweets):
 
     return tokenized_subperiods, period_to_subperiod_mapping
 
-def prepare_dataset():
+def prepare_dataset(df, train=True):
+    """
+    The function `prepare_dataset` processes a DataFrame of tweets and labels, grouping them by MatchID
+    and PeriodID, tokenizing and padding the tweets, and optionally flattening the labels for training.
+    
+    :param df: The `df` parameter in the `prepare_dataset` function is a DataFrame that contains the
+    data for training or testing. It likely includes columns such as 'MatchID', 'PeriodID', 'Tweet', and
+    'EventType' among others. The function processes this DataFrame to prepare the dataset for training
+    or
+    :param train: The `train` parameter in the `prepare_dataset` function is a boolean flag that
+    indicates whether the dataset is being prepared for training or inference. When `train=True`, the
+    function processes the labels along with the tweets data to prepare the dataset for training. When
+    `train=False`, the function only processes, defaults to True (optional)
+    :return: The function `prepare_dataset` returns the dataset and the period_to_subperiod_mapping. The
+    specific return value depends on whether the `train` parameter is set to True or False:
+    """
     grouped_tweets = df.groupby(['MatchID', 'PeriodID'])['Tweet'].apply(list).unstack(fill_value=[])
-    grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
     tokenized_and_padded_tweets, period_to_subperiod_mapping = tokenize_and_process_grouped_tweets(grouped_tweets)
+    
+    if train:
+        grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
 
-    # Flatten the labels to match subperiods
-    labels = []
-    for (match_id, period_id), label in grouped_labels.stack().items():
-        subperiod_indices = period_to_subperiod_mapping[(match_id, period_id)]
-        labels.extend([label] * len(subperiod_indices))
-    labels = torch.tensor(labels, dtype = torch.bfloat16)
-    dataset = TweetDataset(tokenized_and_padded_tweets, labels)
+        # Flatten the labels to match subperiods
+        labels = []
+        for (match_id, period_id), label in grouped_labels.stack().items():
+            subperiod_indices = period_to_subperiod_mapping[(match_id, period_id)]
+            labels.extend([label] * len(subperiod_indices))
+        labels = torch.tensor(labels, dtype=torch.bfloat16)
+        dataset = TweetDataset(tokenized_and_padded_tweets, labels)
+    else:
+        dataset = tokenized_and_padded_tweets
     return dataset, period_to_subperiod_mapping
 
 def prepare_dataloader(dataset, batch_size):
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    return dataloader
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+def split_data(df, test_size=0.2, random_state=42):
+    """
+    Split the data into training and testing datasets.
+    """
+    train_df, test_df = train_test_split(df, test_size=test_size, random_state=random_state, stratify=df['EventType'])
+    return train_df, test_df
 
 
 def train(model, dataloader, optimizer, criterion, device):
@@ -212,3 +228,24 @@ def train(model, dataloader, optimizer, criterion, device):
         
         total_loss += loss.item()
     return total_loss / len(dataloader)
+
+# Function to evaluate the model on the test set
+def evaluate(model, test_dataloader, criterion, device):
+    model.eval()  # Set the model to evaluation mode
+    correct = 0
+    total = 0
+    with torch.no_grad():  # Disable gradient computation during evaluation
+        for tweets, labels in test_dataloader:
+            tweets = tweets.to(device)
+            labels = labels.to(device)
+            outputs = model(tweets)
+
+            # Convert probabilities to binary predictions
+            predicted = (outputs > 0.5).float()  # Threshold at 0.5 for binary classification
+
+            # Calculate accuracy
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+
+    accuracy = correct / total  # Accuracy = correct predictions / total predictions
+    return accuracy
