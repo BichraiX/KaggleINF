@@ -128,7 +128,11 @@ class DifferentialTransformerClassifier(nn.Module):
         self.embedding = EmbeddingLayer(vocab_size, embedding_dim)
         self.tweet_encoder = TweetEncoder(embedding_dim, num_heads, depth,dropout)
         self.proj = nn.Linear(embedding_dim, 2 * embedding_dim)  # Linear layer for projection
-        self.period_encoder = PeriodEncoder(2*embedding_dim, 2*num_heads, 2*depth, dropout)
+        self.period_encoder = PeriodEncoder(2*embedding_dim, 2*num_heads, 2*depth, dropout) 
+        # We use twice the size for the embedding dimension and a model twice as big 
+        # as we believe a period is a more complex object than a Tweet
+        # this number should also be tuned but due to computational cost of tuning the model's parameters
+        # we just used twice the size of the tweet encoder as a heuristic
         self.classifier = ClassificationHead(2*embedding_dim)
         self.embedding_dim = embedding_dim
     

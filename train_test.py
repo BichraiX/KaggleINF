@@ -1,20 +1,19 @@
 import utils
 import torch
 import torch.nn as nn
-from d import DifferentialTransformerClassifier
+from difftransformer import DifferentialTransformerClassifier
+from torch.utils.data import Dataset, DataLoader
 
-# Setup device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# Model parameters
+# Model parameters, best ones obtained from optuna finetuning
 vocab_size = utils.tokenizer.vocab_size()
 depth = 5
 n_embd = 144
-n_head = 4
+n_head = 6
 batch_size = 32
 dropout = 0.014500254910782884
 
-# Initialize model
 model = DifferentialTransformerClassifier(
     vocab_size=vocab_size,
     embedding_dim=n_embd,  
@@ -25,38 +24,34 @@ model = DifferentialTransformerClassifier(
 model.to(device)
 print("Model Loaded")
 
-# Optimizer and loss function
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.00011696142086951537, weight_decay=9.168589372978195e-05,)
-criterion = nn.BCELoss()
+criterion = nn.BCEWithLogitsLoss()
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.9)
 
-# Dataset and dataloader
 train_df, test_df = utils.split_data(utils.df, test_size=0.2)
 
-# Prepare training dataset and dataloader
 train_dataset, train_period_mapping = utils.prepare_dataset(train_df, train=True)
 train_dataloader = utils.prepare_dataloader(train_dataset, batch_size=batch_size)
 
-# Prepare testing dataset and dataloader
 test_dataset, test_period_mapping = utils.prepare_dataset(test_df, train=True)
 test_dataloader = utils.prepare_dataloader(test_dataset, batch_size=batch_size)
 print("Dataloader ready")
 
 # Training loop
-epochs = 1000
+epochs = 1000 # large number to see when the model overfits after evaluating every 5 epochs. 
+# We stop the training once the accuracy starts decreasing and train the model on the whole dataset 
+# on a fewer number of epochs so that it doesn't overfit 
+# (we train on 5 less epochs than when the accuracy on the test set starts decreasing)
+
 checkpoint_path = f"/users/eleves-a/2022/amine.chraibi/KaggleINF/model_{depth}_{n_embd}_{n_head}_{dropout}.pth"
 best_accuracy = 0
 
-# Training loop with minibatch loss printing
 for epoch in range(epochs):
-    # Training step
     loss = utils.train(model, train_dataloader, optimizer, criterion, device)
     print(f"Epoch {epoch+1}, Loss: {loss:.4f}")
     
-    # Adjust learning rate
     scheduler.step()
-    # Evaluate the model every 100 epochs
-    if (epoch + 1) % 10 == 0:
+    if (epoch + 1) % 5 == 0:
         test_accuracy = utils.evaluate(model, test_dataloader, criterion, device)
         print(f"Test Accuracy at epoch {epoch+1}: {test_accuracy:.4f}")
         if test_accuracy > best_accuracy:

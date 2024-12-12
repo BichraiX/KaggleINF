@@ -13,6 +13,7 @@ from nltk.stem import WordNetLemmatizer
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
 
+# Tokenizer class
 class SimpleTokenizer:
     def __init__(self):
         self.word2idx = {'<PAD>': 0, '<UNK>': 1}
@@ -44,7 +45,7 @@ class TweetDataset(Dataset):
 
     def __getitem__(self, idx):
         match_features = torch.tensor(self.features[idx], dtype=torch.long)  # (num_periods, NUM_TWEETS_PER_PERIOD, MAX_TWEET_LENGTH)
-        match_labels = self.labels[idx]  # (num_periods,)
+        match_labels = self.labels[idx]
         return match_features, match_labels
 
 
@@ -81,6 +82,7 @@ def set_seed(seed):
 
 set_seed(42)
 
+# functions to prevent rerunning the preprocessing everytime we wanted to train a model
 def prepare_and_save_data():
     li = []
     for filename in os.listdir("/users/eleves-a/2022/amine.chraibi/KaggleINF/train_tweets"):
@@ -107,18 +109,12 @@ def prepare_tokenizer(df):
 print("Preparing dataset")
 df = load_or_prepare_data()
 tokenizer = prepare_tokenizer(df)
-print("Data and tokenizer ready")
-
-all_tweets = df['Tweet'].values
-tokenizer = SimpleTokenizer()
-tokenizer.build_vocab(all_tweets)
-
 MAX_TWEET_LENGTH = 44  # Maximum tweet length in tokens
 
 grouped_tweets = df.groupby(['MatchID', 'PeriodID'])['Tweet'].apply(list).unstack(fill_value=[])
 grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
 
-PERIOD_LENGTH = 300  # Global variable for period length
+NUM_TWEET = 600  # Global variable for period length
 
 def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     """Pad or truncate tokens to max_length."""
@@ -127,18 +123,18 @@ def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     else:
         return tokens[:max_length]
 
-def split_and_pad_period(period, period_length):
+def split_and_pad_period(period, NUM_TWEET):
     """
-    Split a period into subperiods of size `period_length`, padding as necessary.
+    Split a period into subperiods of size `NUM_TWEET`, padding as necessary.
     """
     total_tweets = len(period)
-    padding_needed = (period_length - (total_tweets % period_length)) % period_length
+    padding_needed = (NUM_TWEET - (total_tweets % NUM_TWEET)) % NUM_TWEET
     padded_period = period + [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH] * padding_needed
 
-    # Split into subperiods of size period_length
+    # Split into subperiods of size NUM_TWEET
     subperiods = [
-        padded_period[i:i + period_length]
-        for i in range(0, len(padded_period), period_length)
+        padded_period[i:i + NUM_TWEET]
+        for i in range(0, len(padded_period), NUM_TWEET)
     ]
 
     return subperiods
@@ -156,7 +152,7 @@ def tokenize_and_process_grouped_tweets(grouped_tweets):
         tokenized_period = [pad_tweet(tokenizer(tweet)) for tweet in tweets]
 
         # Split the period into subperiods
-        subperiods = split_and_pad_period(tokenized_period, PERIOD_LENGTH)
+        subperiods = split_and_pad_period(tokenized_period, NUM_TWEET)
 
         # Map the period_id to the indices of its subperiods
         period_to_subperiod_mapping[(match_id, period_id)] = list(
@@ -231,21 +227,20 @@ def train(model, dataloader, optimizer, criterion, device):
 
 # Function to evaluate the model on the test set
 def evaluate(model, test_dataloader, criterion, device):
-    model.eval()  # Set the model to evaluation mode
+    model.eval()  
     correct = 0
     total = 0
-    with torch.no_grad():  # Disable gradient computation during evaluation
+    with torch.no_grad(): 
         for tweets, labels in test_dataloader:
             tweets = tweets.to(device)
             labels = labels.to(device)
             outputs = model(tweets)
-
-            # Convert probabilities to binary predictions
-            predicted = (outputs > 0.5).float()  # Threshold at 0.5 for binary classification
+            probabilities = torch.sigmoid(outputs) # as the model outputs logits (differential transformer)
+            predicted = (probabilities > 0.5).float()  
 
             # Calculate accuracy
             correct += (predicted == labels).sum().item()
             total += labels.size(0)
 
-    accuracy = correct / total  # Accuracy = correct predictions / total predictions
+    accuracy = correct / total  
     return accuracy
