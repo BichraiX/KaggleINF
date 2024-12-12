@@ -43,3 +43,7 @@ Notebook to train the model on the whole dataset and generate a Kaggle submissio
 # lgbmclean.py
 
 Code to get the best hyperparameters with optuna and train a model with those parameters, generating a submission file at the end.
+
+# HierarchicalTransformer.ipynb
+
+The notebook contains an implementation of a hierarchical transformer and a training function with hyperparameter optimization using Optuna.
