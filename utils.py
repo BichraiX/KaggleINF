@@ -12,8 +12,10 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from torch.utils.data import Dataset, DataLoader
 from sklearn.model_selection import train_test_split
+import spacy
+from tqdm import tqdm
+import swifter
 
-# Tokenizer class
 class SimpleTokenizer:
     def __init__(self):
         self.word2idx = {'<PAD>': 0, '<UNK>': 1}
@@ -45,7 +47,7 @@ class TweetDataset(Dataset):
 
     def __getitem__(self, idx):
         match_features = torch.tensor(self.features[idx], dtype=torch.long)  # (num_periods, NUM_TWEETS_PER_PERIOD, MAX_TWEET_LENGTH)
-        match_labels = self.labels[idx]
+        match_labels = self.labels[idx]  # (num_periods,)
         return match_features, match_labels
 
 
@@ -53,7 +55,7 @@ nltk.download('stopwords')
 nltk.download('wordnet')
 stop_words = set(stopwords.words('english'))
 MAX_TWEET_LENGTH = 44
-DATA_FILE = "/users/eleves-a/2022/amine.chraibi/KaggleINF/preprocessed_data.pkl"
+DATA_FILE = "/preprocessed_data.pkl"
 
 def preprocess_text(text):
     # Lowercasing
@@ -82,11 +84,10 @@ def set_seed(seed):
 
 set_seed(42)
 
-# functions to prevent rerunning the preprocessing everytime we wanted to train a model
 def prepare_and_save_data():
     li = []
-    for filename in os.listdir("/users/eleves-a/2022/amine.chraibi/KaggleINF/train_tweets"):
-        df = pd.read_csv(f"/users/eleves-a/2022/amine.chraibi/KaggleINF/train_tweets/{filename}")
+    for filename in os.listdir("train_tweets"):
+        df = pd.read_csv(f"train_tweets/{filename}")
         li.append(df)
     df = pd.concat(li, ignore_index=True)
     df['Tweet'] = df['Tweet'].apply(preprocess_text)
@@ -109,12 +110,18 @@ def prepare_tokenizer(df):
 print("Preparing dataset")
 df = load_or_prepare_data()
 tokenizer = prepare_tokenizer(df)
+print("Data and tokenizer ready")
+
+all_tweets = df['Tweet'].values
+tokenizer = SimpleTokenizer()
+tokenizer.build_vocab(all_tweets)
+
 MAX_TWEET_LENGTH = 44  # Maximum tweet length in tokens
 
 grouped_tweets = df.groupby(['MatchID', 'PeriodID'])['Tweet'].apply(list).unstack(fill_value=[])
 grouped_labels = df.groupby(['MatchID', 'PeriodID'])['EventType'].max().unstack(fill_value=0)
 
-NUM_TWEET = 600  # Global variable for period length
+PERIOD_LENGTH = 300  # Global variable for period length
 
 def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     """Pad or truncate tokens to max_length."""
@@ -123,18 +130,18 @@ def pad_tweet(tokens, max_length=MAX_TWEET_LENGTH):
     else:
         return tokens[:max_length]
 
-def split_and_pad_period(period, NUM_TWEET):
+def split_and_pad_period(period, period_length):
     """
-    Split a period into subperiods of size `NUM_TWEET`, padding as necessary.
+    Split a period into subperiods of size `period_length`, padding as necessary.
     """
     total_tweets = len(period)
-    padding_needed = (NUM_TWEET - (total_tweets % NUM_TWEET)) % NUM_TWEET
+    padding_needed = (period_length - (total_tweets % period_length)) % period_length
     padded_period = period + [[tokenizer.word2idx['<PAD>']] * MAX_TWEET_LENGTH] * padding_needed
 
-    # Split into subperiods of size NUM_TWEET
+    # Split into subperiods of size period_length
     subperiods = [
-        padded_period[i:i + NUM_TWEET]
-        for i in range(0, len(padded_period), NUM_TWEET)
+        padded_period[i:i + period_length]
+        for i in range(0, len(padded_period), period_length)
     ]
 
     return subperiods
@@ -152,7 +159,7 @@ def tokenize_and_process_grouped_tweets(grouped_tweets):
         tokenized_period = [pad_tweet(tokenizer(tweet)) for tweet in tweets]
 
         # Split the period into subperiods
-        subperiods = split_and_pad_period(tokenized_period, NUM_TWEET)
+        subperiods = split_and_pad_period(tokenized_period, PERIOD_LENGTH)
 
         # Map the period_id to the indices of its subperiods
         period_to_subperiod_mapping[(match_id, period_id)] = list(
@@ -227,20 +234,127 @@ def train(model, dataloader, optimizer, criterion, device):
 
 # Function to evaluate the model on the test set
 def evaluate(model, test_dataloader, criterion, device):
-    model.eval()  
+    model.eval()  # Set the model to evaluation mode
     correct = 0
     total = 0
-    with torch.no_grad(): 
+    with torch.no_grad():  # Disable gradient computation during evaluation
         for tweets, labels in test_dataloader:
             tweets = tweets.to(device)
             labels = labels.to(device)
             outputs = model(tweets)
-            probabilities = torch.sigmoid(outputs) # as the model outputs logits (differential transformer)
-            predicted = (probabilities > 0.5).float()  
+
+            # Convert probabilities to binary predictions
+            predicted = (outputs > 0.5).float()  # Threshold at 0.5 for binary classification
 
             # Calculate accuracy
             correct += (predicted == labels).sum().item()
             total += labels.size(0)
 
-    accuracy = correct / total  
+    accuracy = correct / total  # Accuracy = correct predictions / total predictions
     return accuracy
+
+
+nlp = spacy.load('en_core_web_sm', disable=['parser', 'ner'])
+
+TRAIN_DIR = "/train_tweets"
+EVAL_DIR = "/eval_tweets"
+DATA_FILE = "data_spacy.pkl"
+DATA_FILE_EVAL = "data_eval_spacy.pkl"
+
+def preprocess_text_spacy(text):
+    """
+    Fonction de prétraitement du texte avec SpaCy pour la lemmatisation et la suppression des stopwords.
+    """
+    # Convertir en minuscule
+    text = text.lower()
+    
+    # Remplacer les URLs par un token spécial
+    text = re.sub(r'http\S+|www.\S+', '<URL>', text)
+    
+    # Remplacer les mentions @username par <USER>
+    text = re.sub(r'@\w+', '<USER>', text)
+    
+    # Remplacer les hashtags par leur contenu sans #
+    text = re.sub(r'#(\w+)', r'\1', text)
+    
+    # Retirer la ponctuation (sauf symboles spécifiques comme <URL> ou <USER>)
+    text = re.sub(r'[^\w\s<>]', '', text)
+    
+    # Retirer les nombres
+    text = re.sub(r'\d+', '', text)
+    
+    # Tokenisation et lemmatisation avec SpaCy
+    doc = nlp(text)
+    words = [token.lemma_ for token in doc if not token.is_stop and token.text not in ['<URL>', '<USER>']]
+    
+    return ' '.join(words)
+
+
+def prepare_and_save_data_spacy():
+    """
+    Préparer et sauvegarder les données d'entraînement.
+    Cette fonction garde toutes les colonnes des CSV, applique le prétraitement uniquement sur les tweets,
+    et limite le traitement aux 1500 premiers tweets par période pour chaque match.
+    """
+    print("Prétraitement des données d'entraînement...")
+    train_files = os.listdir(TRAIN_DIR)
+    train_dataframes = []
+    
+    for filename in tqdm(train_files, desc="Traitement des fichiers CSV d'entraînement"):
+        filepath = os.path.join(TRAIN_DIR, filename)
+        df = pd.read_csv(filepath)  
+        train_dataframes.append(df)
+
+    train_data = pd.concat(train_dataframes, ignore_index=True)
+
+
+    tqdm.pandas(desc="Prétraitement des tweets d'entraînement")
+    try:
+        train_data['Tweet'] = train_data['Tweet'].swifter.apply(preprocess_text_spacy)
+    except AttributeError:
+        print("Swifter indisponible. Utilisation de apply() classique.")
+        train_data['Tweet'] = train_data['Tweet'].apply(preprocess_text_spacy)
+    
+    with open(DATA_FILE, 'wb') as f:
+        pickle.dump(train_data, f)
+
+    print("Données d'entraînement sauvegardées dans", DATA_FILE)
+
+def prepare_and_save_data_spacy_eval():
+    print("Prétraitement des données d'évaluation'...")
+    train_files = os.listdir(EVAL_DIR)
+    train_dataframes = []
+    
+    for filename in tqdm(train_files, desc="Traitement des fichiers CSV d'entraînement"):
+        filepath = os.path.join(EVAL_DIR, filename)
+        df = pd.read_csv(filepath)  
+        train_dataframes.append(df)
+
+    train_data = pd.concat(train_dataframes, ignore_index=True)
+
+
+
+    tqdm.pandas(desc="Prétraitement des tweets d'entraînement")
+    try:
+        train_data['Tweet'] = train_data['Tweet'].swifter.apply(preprocess_text_spacy)
+    except AttributeError:
+        print("Swifter indisponible. Utilisation de apply() classique.")
+        train_data['Tweet'] = train_data['Tweet'].apply(preprocess_text_spacy)
+    
+    with open(DATA_FILE_EVAL, 'wb') as f:
+        pickle.dump(train_data, f)
+
+    print("Données d'entraînement sauvegardées dans", DATA_FILE_EVAL)
+
+
+def load_or_prepare_data_spacy():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, 'rb') as f:
+            return pickle.load(f)
+    return prepare_and_save_data_spacy()
+
+def load_or_prepare_data_eval_spacy():
+    if os.path.exists(DATA_FILE_EVAL):
+        with open(DATA_FILE_EVAL, 'rb') as f:
+            return pickle.load(f)
+    return prepare_and_save_data_spacy_eval()

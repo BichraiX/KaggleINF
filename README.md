@@ -31,3 +31,15 @@ Code for training the model on the whole dataset on a single machine.
 # sentiment.py
 
 Code used to perform sentiment analysis on the dataset. Unfortunately this did not yield very good results and we did not end up using this feature in our best models.
+
+# lgbm_train_test.ipynb
+
+Notebook to train and test our LGBM model using our fulll feature engineering.
+
+# lgbm_submission.ipynb
+
+Notebook to train the model on the whole dataset and generate a Kaggle submission csv file.
+
+# lgbmclean.py
+
+Code to get the best hyperparameters with optuna and train a model with those parameters, generating a submission file at the end.
